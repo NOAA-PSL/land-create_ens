@@ -1,0 +1,3 @@
+[submodule "stochastic_physics"]
+	path = stochastic_physics
+	url = https://github.com/pjpegion/stochastic_physics
