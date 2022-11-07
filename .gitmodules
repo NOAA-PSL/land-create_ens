@@ -1,3 +1,6 @@
 [submodule "stochastic_physics"]
 	path = stochastic_physics
 	url = https://github.com/pjpegion/stochastic_physics
+[submodule "land-vector2tile"]
+	path = land-vector2tile
+	url = https://github.com/NOAA-PSL/land-vector2tile

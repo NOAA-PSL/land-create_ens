@@ -32,11 +32,11 @@ fi
 export OMP_NUM_THREADS=1
 module list
 
-for mem in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+for mem in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20
 do
-    cp ../../input.nml.C${RES}.vgf input.nml
+    cp ../../stochy_input.C96.vgf.nml input.nml
     sed -i -e "s/LNDPSEED/$mem/g" input.nml
     time srun --label -n 6 standalone_stochy.x 
-    mkdir ../../stochy_out$mem
-    mv workg* ../../stochy_out$mem
+    mkdir ../../stochy_out0$mem
+    mv workg* ../../stochy_out0${mem}
 done

@@ -1,0 +1,17 @@
+&run_setup
+! file with perturbation pattern
+  stochy_input_file = "stochy_out0XXMEM/perts_ens0XXMEM.nc"
+
+! file with data that will be perturbed
+  var_input_file = "/scratch1/NCEPDEV/stmp2/Michael.Barlage/forcing/C96/static/ufs-land_C96_static_fields.nc"
+
+! output file with perturbed data
+  output_file = "stochy_out0XXMEM/ufs-land_C96_static_fields_lndp0XXMEM.nc"
+
+! list of variables to be perturbed".
+! current options: vgf (vegetation fraction)
+  lndp_var_list = 'vgf'
+
+! list of perturbation magnitudes
+  lndp_prt_list = 0.25
+/
