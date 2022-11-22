@@ -1,2 +1,5 @@
 lndp2tile_input.nml
 lndp_apply_input.nml
+create_atmos_ens/*o 
+create_atmos_ens/*x
+create_atmos_ens/*out

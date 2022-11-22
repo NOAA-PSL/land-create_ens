@@ -1,39 +1,35 @@
-program regrid_gefs_c96_monthly
+program get_gefs_monthly
 
   use netcdf
   implicit none
 
-  integer, parameter              :: lats        = 721    ! grid dimension for latitudes
-  integer, parameter              :: lons        = 1440   ! grid dimension for longitudes
-  integer, parameter              :: locs        = 18360  ! C96 vector dimension size
-  integer, parameter              :: weight_locs = 73440  ! regrid dimension size
-  integer, parameter              :: vds         = 8      ! variable size
-  integer, parameter              :: tds         = 8      ! 8 times (3-hourly) daily
-  integer, parameter              :: eds         = 30     ! ensemble size
-  real,    parameter              :: missing     = -999.  ! missing value for ensemble mean
+  integer, parameter :: lats      = 721    ! grid dimension for latitudes
+  integer, parameter :: lons      = 1440   ! grid dimension for longitudes
+  integer, parameter :: vds       = 8      ! variable size
+  integer, parameter :: tds       = 8      ! 8 times (3-hourly) daily
+  integer, parameter :: eds       = 30     ! ensemble size
+  real,    parameter :: missing   = -999.  ! missing value for ensemble mean
 !
-  real                            :: v3d(lons,lats,vds), v1d(locs)
-  real                            :: q(lons,lats)
-  real                            :: avg(lons,lats,vds)
-  real                            :: cnt(lons,lats,vds)
-  integer, dimension(weight_locs) :: source_lookup, destination_lookup
-  real*8 , dimension(weight_locs) :: weights
-  character(len=30)               :: ivnames(vds), ovnames(vds-1)
-  character(len=256)              :: input_dir, output_dir, ifname, ofname, exefile, fname_wts
-  character(len=4)                :: cyear
-  character(len=10)               :: cdate
-  character(len=8)                :: cy4m2d2
-  character(len=2)                :: cmonth, cens2, chour
-  character(len=3)                :: cens3
-  double precision                :: time_cur
-  logical                         :: file_exists, compress
-  integer                         :: monlen(12)
-  integer                         :: iargs, year, month, day, hour, iy4m2d2
-  integer                         :: idy, idy_beg, idy_end, eid, vid, tid, tstep
-  integer                         :: i, j, vid_u, vid_v, vid_p, vid_t, vid_rh
-  integer                         :: incid, oncid, ierr, io
-
-  namelist/regrid_ens/input_dir, output_dir, fname_wts, year, month
+  real               :: v3d(lons,lats,vds)
+  real               :: v2d(lons,lats)
+  real               :: q(lons,lats)
+  real               :: avg(lons,lats,vds)
+  real               :: cnt(lons,lats,vds)
+  character(len=30)  :: ivnames(vds), ovnames(vds-1)
+  character(len=256) :: dir, ifname, ifname_last, ifname_next, ofname, exefile
+  character(len=4)   :: cyear
+  character(len=10)  :: cdate, cdate_last, cdate_next
+  character(len=8)   :: cy4m2d2, cy4m2d2_last, cy4m2d2_next
+  character(len=2)   :: cmonth, cens2, chour, chour_last, chour_next
+  character(len=3)   :: cens3
+  double precision   :: time_cur
+  logical            :: file_exists, compress
+  integer            :: monlen(12)
+  integer            :: iargs, year, month, day, hour, iy4m2d2
+  integer            :: idy, idy_beg, idy_end, eid, vid, tid, tstep
+  integer            :: iyr_last, imo_last, idy_last, iyr_next, imo_next, idy_next
+  integer            :: i, j, vid_u, vid_v, vid_p, vid_t, vid_rh, vid_sw, vid_lw, vid_prcp
+  integer            :: incid, incid_last, incid_next, oncid
   monlen  = (/31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31/)
 !
 ! input variable names 
@@ -45,21 +41,10 @@ program regrid_gefs_c96_monthly
 !
   ovnames = (/'temperature',        'surface_pressure', 'specific_humidity',   'solar_radiation', &
               'longwave_radiation', 'precipitation',    'wind_speed'/)
-
-  open (action='read', file='regrid_ens.nml', iostat=ierr, newunit=io)
-  read (nml=regrid_ens, iostat=ierr, unit=io)
-  close (io)
- 
-!  write(6,*) trim(adjustl(input_dir)), trim(adjustl(output_dir)), trim(adjustl(fname_wts)), year, month
 !
 ! base directory
 !
-!  input_dir = '/scratch2/NCEPDEV/land/Zhichang.Guo/GEFS/'
-!  output_dir = './'
-!
-! file for regridding weights
-!
-!  fname_wts = '/scratch1/NCEPDEV/stmp2/Michael.Barlage/data/weights/gefs/GEFS-C96_bilinear_wts.nc'
+  dir = '/scratch2/NCEPDEV/land/Zhichang.Guo/GEFS/'
 !
 ! output internalally compressed netcdf file or not
 !
@@ -67,7 +52,12 @@ program regrid_gefs_c96_monthly
 !
 ! command line input (year and month)
 !
-
+  iargs = iargc()
+  call getarg(0, exefile)
+  call getarg(1, cyear)
+  call getarg(2, cmonth)
+  read(cyear,'(i4)') year
+  read(cmonth,'(i2)') month
   idy_beg = 1
   if(year == 2020 .and. month == 9) then
       idy_beg = 23
@@ -79,10 +69,6 @@ program regrid_gefs_c96_monthly
      stop
   endif
 !
-! read in regridding weights
-!
-  call read_weights(trim(adjustl(fname_wts)), weight_locs, source_lookup, destination_lookup, weights)
-!
 ! Modify this for the leap year 
 !
   idy_end = monlen(month) 
@@ -91,34 +77,75 @@ program regrid_gefs_c96_monthly
 !
 ! find the id for P/T/RH/U/V
 !
+  vid_p    = -1
+  vid_t    = -1
+  vid_rh   = -1
+  vid_u    = -1
+  vid_v    = -1
+  vid_sw   = -1
+  vid_lw   = -1
+  vid_prcp = -1
   do vid = 1, vds
-    if(trim(ivnames(vid)) == 'PRES_surface')       vid_p  = vid
-    if(trim(ivnames(vid)) == 'TMP_2maboveground')  vid_t  = vid
-    if(trim(ivnames(vid)) == 'RH_2maboveground')   vid_rh = vid
-    if(trim(ivnames(vid)) == 'URD_10maboveground') vid_u  = vid
-    if(trim(ivnames(vid)) == 'VRD_10maboveground') vid_v  = vid
+    if(trim(ivnames(vid)) == 'PRES_surface')        vid_p    = vid
+    if(trim(ivnames(vid)) == 'TMP_2maboveground')   vid_t    = vid
+    if(trim(ivnames(vid)) == 'RH_2maboveground')    vid_rh   = vid
+    if(trim(ivnames(vid)) == 'UGRD_10maboveground') vid_u    = vid
+    if(trim(ivnames(vid)) == 'VGRD_10maboveground') vid_v    = vid
+    if(trim(ivnames(vid)) == 'DSWRF_surface')       vid_sw   = vid
+    if(trim(ivnames(vid)) == 'DLWRF_surface')       vid_lw   = vid
+    if(trim(ivnames(vid)) == 'APCP_surface')        vid_prcp = vid
   enddo
+  if(vid_p < 0 .or. vid_t < 0  .or. vid_rh < 0 .or. vid_u < 0 .or. &
+     vid_v < 0 .or. vid_sw < 0 .or. vid_lw < 0 .or. vid_prcp < 0) then
+     print*, 'Variables P/T/RH/U/V/SW/LW/PRCP ids are not found'
+     stop 10
+  endif
 !
 ! defind the output netcdf file
 !
   if(compress) then
-    ofname = trim(adjustl(output_dir))//'/regrid'//'/C96_GEFS_forcing_'//trim(cyear)//'-'//trim(cmonth)//'.nc4'
+    ofname = trim(dir)//'/monthly'//'/GEFS_forcing_'//trim(cyear)//'-'//trim(cmonth)//'.nc4'
   else
-    ofname = trim(adjustl(output_dir))//'/regrid'//'/C96_GEFS_forcing_'//trim(cyear)//'-'//trim(cmonth)//'.nc'
+    ofname = trim(dir)//'/monthly'//'/GEFS_forcing_'//trim(cyear)//'-'//trim(cmonth)//'.nc'
   endif
-  call define_output_file(ofname, locs, eds, vds-1, ovnames, oncid, compress)
+  call define_output_file(ofname, lons, lats, eds, vds-1, ovnames, oncid, compress)
 !
-! for each day of the month, read in variables, and do the following
-! calculations:
+! for each day of the month, read in variables, and do the following calculations:
 !     1. calculate wind speed from U/V
 !     2. calculate specific humidity from T/P/RH
 !     3. calculate ensemble mean for each variables
 !     4. calculate ensemble mean specific from ensemble mean T/P/RH
 !
   tstep = 0
+  iyr_last = year
+  imo_last = month
+  iyr_next = year
+  imo_next = month
   do idy = idy_beg, idy_end
     write(cy4m2d2,'(i4,2i2.2)') year, month, idy
     write(cdate,'(i4,a1,i2.2,a1,i2.2)') year, '-', month, '-', idy
+    idy_last = idy - 1
+    if(idy_last < 1) then
+      imo_last = imo_last - 1
+      if(imo_last < 1) then
+        iyr_last = iyr_last - 1
+        imo_last = 12
+      endif
+      idy_last = monlen(imo_last)
+    endif
+    write(cy4m2d2_last,'(i4,2i2.2)') iyr_last, imo_last, idy_last
+    write(cdate_last,'(i4,a1,i2.2,a1,i2.2)') iyr_last, '-', imo_last, '-', idy_last
+    idy_next = idy + 1
+    if(idy_next > monlen(month)) then
+      imo_next = imo_next + 1
+      idy_next = 1
+      if(imo_next > 12) then
+        iyr_next = iyr_next + 1
+        imo_next = 1
+      endif
+    endif
+    write(cy4m2d2_next,'(i4,2i2.2)') iyr_next, imo_next, idy_next
+    write(cdate_next,'(i4,a1,i2.2,a1,i2.2)') iyr_next, '-', imo_next, '-', idy_next
     do tid = 1, tds
       write(chour,'(i2.2)') (tid-1)*3
       avg(:,:,:) = 0.0
@@ -126,9 +153,7 @@ program regrid_gefs_c96_monthly
       do eid = 1, eds
         write(cens2,'(i2.2)') eid
         write(cens3,'(i3.3)') eid
-        ifname = trim(adjustl(input_dir))//'/nc4/'//trim(cy4m2d2)//'/gefs.ens'//trim(cens2)//'.'//trim(cdate)//'_'//trim(chour)//'Z.nc'
-        
-        write(6,*) 'reading ', trim(ifname)
+        ifname  = trim(dir)//'/nc4/'//trim(cy4m2d2)//'/gefs.ens'//trim(cens2)//'.'//trim(cdate)//'_'//trim(chour)//'Z.nc'
         inquire(file=ifname, exist=file_exists)
         if(file_exists) then
           call open_source_file(ifname, incid)
@@ -140,15 +165,14 @@ program regrid_gefs_c96_monthly
 !
 !         read in variables
 !
-          call read_source_variable(incid, lons, lats, vds, v3d, ivnames)
+          call read_source_variable(incid, lons, lats, vds, v3d(:,:,:), ivnames)
 !
 !         calculate wind speed and relative humidity, then output variables
 !
           do vid = 1, vds-1
             if(vid == vid_rh) then
               call cal_rh2sh(lons, lats, v3d(:,:,vid_t), v3d(:,:,vid_p), v3d(:,:,vid_rh), q)
-              call regrid_variable_gefs2fv3(lons, lats, weight_locs, locs, source_lookup, &
-                                          destination_lookup, weights, q(:,:), v1d)
+              call output_variable(oncid, lons, lats, tstep, q(:,:), trim(ovnames(vid))//trim(cens3))
             else
               if(vid == vid_u) then
                 do i = 1, lons
@@ -156,11 +180,65 @@ program regrid_gefs_c96_monthly
                     v3d(i,j,vid) = sqrt(v3d(i,j,vid_u)*v3d(i,j,vid_u) + v3d(i,j,vid_v)*v3d(i,j,vid_v))
                   enddo
                 enddo
+              else if(vid == vid_prcp .or. vid == vid_lw) then
+! tid = 1/3/5/7 are 6-hourly forecasts (00Z, 06Z, 12Z, 18Z)
+! tid = 2/4/6/8 are 3-hourly forecasts (03Z, 09Z, 15Z, 21Z)
+! deal with 6-hourly average of long-wave radiation and precipitation
+! second 3-hourly average = 2 * 6-hourly average - first 3-hourly average
+                if(mod(tid-1,2) == 0) then
+                  if(tid == 1) then
+                    write(chour_last,'(i2.2)') (tid-2)*3 + 24
+                    ifname_last = trim(dir)//'/nc4/'//trim(cy4m2d2_last)//'/gefs.ens'//trim(cens2)// & 
+                                  '.'//trim(cdate_last)//'_'//trim(chour_last)//'Z.nc'
+                  else
+                    write(chour_last,'(i2.2)') (tid-2)*3
+                    ifname_last = trim(dir)//'/nc4/'//trim(cy4m2d2)//'/gefs.ens'//trim(cens2)//'.'// &
+                                  trim(cdate)//'_'//trim(chour_last)//'Z.nc'
+                  endif
+                  call open_source_file(ifname_last, incid_last)
+                  call read_source_variable_one(incid_last, lons, lats, v2d(:,:), ivnames(vid))
+                  call close_file(incid_last)
+                  do i = 1, lons
+                    do j = 1, lats
+                      v3d(i,j,vid) = 2.0*v3d(i,j,vid) - v2d(i,j)
+                    enddo
+                  enddo
+                endif
+              else if(vid == vid_sw) then
+! tid = 1/3/5/7 are 6-hourly forecasts (00Z, 06Z, 12Z, 18Z)
+! tid = 2/4/6/8 are 3-hourly forecasts (03Z, 09Z, 15Z, 21Z)
+! deal with 6-hourly average of short-wave radiation, long-wave radiation, and precipitation
+! second 3-hourly average = 2 * 6-hourly average - first 3-hourly average
+! for short-wave radiation, convert backward average to forward average
+                if(mod(tid-1,2) == 0) then
+                  write(chour_next,'(i2.2)') tid*3
+                  ifname_next = trim(dir)//'/nc4/'//trim(cy4m2d2)//'/gefs.ens'//trim(cens2)//'.'// &
+                                trim(cdate)//'_'//trim(chour_next)//'Z.nc'
+                  call open_source_file(ifname_next, incid_next)
+                  call read_source_variable_one(incid_next, lons, lats, v3d(:,:,vid), ivnames(vid))
+                  call close_file(incid_next)
+                else
+                  if(tid == tds) then
+                    write(chour_next,'(i2.2)') 0
+                    ifname_next = trim(dir)//'/nc4/'//trim(cy4m2d2_next)//'/gefs.ens'//trim(cens2)//'.'// &
+                                  trim(cdate_next)//'_'//trim(chour_next)//'Z.nc'
+                  else
+                    write(chour_next,'(i2.2)') tid*3
+                    ifname_next = trim(dir)//'/nc4/'//trim(cy4m2d2)//'/gefs.ens'//trim(cens2)//'.'// &
+                                  trim(cdate)//'_'//trim(chour_next)//'Z.nc'
+                  endif
+                  call open_source_file(ifname_next, incid_next)
+                  call read_source_variable_one(incid_next, lons, lats, v2d(:,:), ivnames(vid))
+                  call close_file(incid_next)
+                  do i = 1, lons
+                    do j = 1, lats
+                      v3d(i,j,vid) = 2.0*v2d(i,j) - v3d(i,j,vid)
+                    enddo
+                  enddo
+                endif
               endif
-              call regrid_variable_gefs2fv3(lons, lats, weight_locs, locs, source_lookup, &
-                                          destination_lookup, weights, v3d(:,:,vid), v1d)
+              call output_variable(oncid, lons, lats, tstep, v3d(:,:,vid), trim(ovnames(vid))//trim(cens3))
             endif
-            call output_variable(oncid, locs, tstep, v1d(:), trim(ovnames(vid))//trim(cens3))
 !
 !           accumulate each variable for calculating ensemble mean
 !
@@ -199,81 +277,28 @@ program regrid_gefs_c96_monthly
 !
       do vid = 1, vds-1
         if(vid == vid_rh) then
-          call regrid_variable_gefs2fv3(lons, lats, weight_locs, locs, source_lookup, &
-                                      destination_lookup, weights, q(:,:), v1d)
+          call output_variable(oncid, lons, lats, tstep, q(:,:),       trim(ovnames(vid)))
         else
-          call regrid_variable_gefs2fv3(lons, lats, weight_locs, locs, source_lookup, &
-                                      destination_lookup, weights, avg(:,:,vid), v1d)
+          call output_variable(oncid, lons, lats, tstep, avg(:,:,vid), trim(ovnames(vid)))
         endif
-        call output_variable(oncid, locs, tstep, v1d(:), trim(ovnames(vid)))
       enddo
     enddo   ! each time step
   enddo     ! each day
   call close_file(oncid)
   print*, 'Program ended normally!'
-end program regrid_gefs_c96_monthly
+end program get_gefs_monthly
 !--------------------------------------------
-subroutine read_weights(filename, weight_locs, source_lookup, destination_lookup, weights)
-  use netcdf
-  implicit none
-  character(len=*),                intent(in)  :: filename
-  integer,                         intent(in)  :: weight_locs
-  integer, dimension(weight_locs), intent(out) :: source_lookup, destination_lookup
-  real*8 , dimension(weight_locs), intent(out) :: weights
-  integer                                      :: ncid, status, varid
-  status = nf90_open(filename, NF90_NOwrite, ncid)
-    if (status /= nf90_noerr) call handle_err(status)
-
-  status = nf90_inq_varid(ncid, "col", varid)
-    if (status /= nf90_noerr) call handle_err(status)
-  status = nf90_get_var(ncid, varid , source_lookup)
-    if (status /= nf90_noerr) call handle_err(status)
-
-  status = nf90_inq_varid(ncid, "row", varid)
-    if (status /= nf90_noerr) call handle_err(status)
-  status = nf90_get_var(ncid, varid , destination_lookup)
-    if (status /= nf90_noerr) call handle_err(status)
-
-  status = nf90_inq_varid(ncid, "S", varid)
-    if (status /= nf90_noerr) call handle_err(status)
-  status = nf90_get_var(ncid, varid , weights)
-    if (status /= nf90_noerr) call handle_err(status)
-
-  status = nf90_close(ncid)
-end subroutine read_weights
-!--------------------------------------------
-subroutine regrid_variable_gefs2fv3(src_lons, src_lats, weight_locs, dst_locs, &
-                                    src_lookup, dst_lookup, weights, src_var, dst_var)
-  implicit none
-  integer,                               intent(in)  :: src_lons, src_lats, weight_locs, dst_locs
-  real   , dimension(src_lons,src_lats), intent(in)  :: src_var
-  integer, dimension(weight_locs),       intent(in)  :: src_lookup, dst_lookup
-  real*8 , dimension(weight_locs),       intent(in)  :: weights
-  real   , dimension(dst_locs),          intent(out) :: dst_var
-  integer                                            :: iwt, lonloc, latloc
-  dst_var(:) = 0.0
-  do iwt = 1, weight_locs
-    latloc = (src_lookup(iwt)-1)/src_lons + 1
-    lonloc = (src_lookup(iwt)-1) - (latloc-1)*src_lons + 1
-    if(latloc < 1 .or. lonloc < 1) then
-      print*, iwt, src_lons, latloc, lonloc, src_lookup(iwt)
-    endif
-    dst_var(dst_lookup(iwt)) = dst_var(dst_lookup(iwt)) + &
-                               weights(iwt) * src_var(lonloc,latloc)
-  end do
-end subroutine regrid_variable_gefs2fv3
-!--------------------------------------------
-subroutine define_output_file(filename, locs, eds, vds, vnames, ncid, compress)
+subroutine define_output_file(filename, lons, lats, eds, vds, vnames, ncid, compress)
   use netcdf
   implicit none
   character(len=*), intent(in)  :: filename
-  integer,          intent(in)  :: locs, eds, vds
+  integer,          intent(in)  :: lons, lats, eds, vds
   character(len=*), intent(in)  :: vnames(vds)
   integer,          intent(out) :: ncid
   logical,          intent(in)  :: compress
   character(len=80)             :: lname
   character(len=3)              :: cens3
-  integer                       :: dim_id_i, dim_id_t  ! netcdf dimension identifiers
+  integer                       :: dim_id_i, dim_id_j, dim_id_t  ! netcdf dimension identifiers
   integer                       :: status, eid, vid, varid
   if(compress) then
     status = nf90_create(filename, NF90_NETCDF4, ncid)
@@ -284,7 +309,9 @@ subroutine define_output_file(filename, locs, eds, vds, vnames, ncid, compress)
 
 ! Define dimensions in the file.
 
-  status = nf90_def_dim(ncid, "location", locs , dim_id_i)
+  status = nf90_def_dim(ncid, "lon"   , lons , dim_id_i)
+    if (status /= nf90_noerr) call handle_err(status)
+  status = nf90_def_dim(ncid, "lat"   , lats , dim_id_j)
     if (status /= nf90_noerr) call handle_err(status)
   status = nf90_def_dim(ncid, "time"   , nf90_unlimited , dim_id_t)
     if (status /= nf90_noerr) call handle_err(status)
@@ -297,7 +324,7 @@ subroutine define_output_file(filename, locs, eds, vds, vnames, ncid, compress)
     if (status /= nf90_noerr) call handle_err(status)
   do vid = 1, vds
     call get_long_name(vnames(vid), lname)
-    status = nf90_def_var(ncid, trim(vnames(vid)), NF90_FLOAT, (/dim_id_i, dim_id_t/), varid)
+    status = nf90_def_var(ncid, trim(vnames(vid)), NF90_FLOAT, (/dim_id_i, dim_id_j, dim_id_t/), varid)
       if (status /= nf90_noerr) call handle_err(status)
 
     status = nf90_put_att(ncid, varid, 'long_name', trim(lname)//" ensemble mean")
@@ -312,7 +339,7 @@ subroutine define_output_file(filename, locs, eds, vds, vnames, ncid, compress)
     write(cens3,'(i3.3)') eid
     do vid = 1, vds
       call get_long_name(vnames(vid), lname)
-      status = nf90_def_var(ncid, trim(vnames(vid))//trim(cens3), NF90_FLOAT, (/dim_id_i, dim_id_t/), varid)
+      status = nf90_def_var(ncid, trim(vnames(vid))//trim(cens3), NF90_FLOAT, (/dim_id_i, dim_id_j, dim_id_t/), varid)
         if (status /= nf90_noerr) call handle_err(status)
 
       status = nf90_put_att(ncid, varid, 'long_name', trim(lname)//" for the ensemble "//trim(cens3))
@@ -377,6 +404,19 @@ subroutine read_source_variable(ncid, lons, lats, vds, source_input, vnames)
       if (status /= nf90_noerr) call handle_err(status)
   enddo
 end subroutine read_source_variable
+!--------------------------------------------
+subroutine read_source_variable_one(ncid, lons, lats, source_input, vname)
+  use netcdf
+  implicit none
+  integer,          intent(in)  :: ncid, lons, lats
+  character(len=*), intent(in)  :: vname
+  real,             intent(out) :: source_input(lons,lats)
+  integer                       :: status, varid, vid
+  status = nf90_inq_varid(ncid, vname, varid)
+    if (status /= nf90_noerr) call handle_err(status)
+  status = nf90_get_var(ncid, varid, source_input(:,:), start = (/1,1,1/), count = (/lons,lats,1/))
+    if (status /= nf90_noerr) call handle_err(status)
+end subroutine read_source_variable_one
 !
 !----------- calculate specific humidity from relative humidity -----------
 !
@@ -410,16 +450,16 @@ subroutine cal_rh2sh(nx, ny, t, p, rh, q)
   enddo
 end subroutine cal_rh2sh
 !--------------------------------------------
-subroutine output_variable(ncid, locs, tid, var, vname)
+subroutine output_variable(ncid, lons, lats, tid, var, vname)
   use netcdf
   implicit none
-  integer,          intent(in) :: ncid, locs, tid
+  integer,          intent(in) :: ncid, lons, lats, tid
   character(len=*), intent(in) :: vname
-  real,             intent(in) :: var(locs)
+  real,             intent(in) :: var(lons,lats)
   integer                      :: status, varid
   status = nf90_inq_varid(ncid, vname, varid)
     if (status /= nf90_noerr) call handle_err(status)
-  status = nf90_put_var(ncid, varid , var, start = (/1,tid/), count = (/locs,1/))
+  status = nf90_put_var(ncid, varid , var, start = (/1,1,tid/), count = (/lons,lats,1/))
     if (status /= nf90_noerr) call handle_err(status)
 end subroutine output_variable
 !--------------------------------------------

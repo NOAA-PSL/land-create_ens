@@ -1,0 +1,7 @@
+ &regrid_ens
+  input_dir='/scratch2/NCEPDEV/land/Zhichang.Guo/GEFS/',
+  output_dir='./junk/',
+  fname_wts='/scratch1/NCEPDEV/stmp2/Michael.Barlage/data/weights/gefs/GEFS-C96_bilinear_wts.nc', 
+  year=2020
+  month=10
+  /

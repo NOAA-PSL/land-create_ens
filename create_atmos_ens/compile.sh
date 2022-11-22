@@ -12,6 +12,6 @@ export FFLAGS="$INCS"
 
 export LIBSM="-L${NETCDF}/lib -lnetcdff"
 
-file=get_gefs_monthly_ens
+file=regrid_gefs_c96_monthly
 $FCMP $FFLAGS -c ${file}.f90 -o $file.o
 $FCMP -o $file.x $file.o $LIBSM
