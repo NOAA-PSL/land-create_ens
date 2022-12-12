@@ -15,3 +15,5 @@ To compile:
 To run: 
 set dates, input and output directory in regrid_ens.nml. 
 > sbatch submit_regrid.sh
+
+December 12 - not working, as needs updated weights file.
